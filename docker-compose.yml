@@ -1,0 +1,95 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: code-review-postgres
+    environment:
+      POSTGRES_USER: code_review
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: code_review_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U code_review"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: code-review-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: code-review-backend
+    environment:
+      DATABASE_URL: postgresql://code_review:password@postgres:5432/code_review_db
+      REDIS_URL: redis://redis:6379
+      ML_SERVICE_URL: http://ml-service:8001
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
+      GITLAB_TOKEN: ${GITLAB_TOKEN:-}
+      GITLAB_WEBHOOK_SECRET: ${GITLAB_WEBHOOK_SECRET:-}
+      BITBUCKET_TOKEN: ${BITBUCKET_TOKEN:-}
+      BITBUCKET_WEBHOOK_SECRET: ${BITBUCKET_WEBHOOK_SECRET:-}
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    command: python -m uvicorn app:app --host 0.0.0.0 --port 8000 --reload
+
+  ml-service:
+    build:
+      context: ./ml-service
+      dockerfile: Dockerfile
+    container_name: code-review-ml-service
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./ml-service:/app
+      - ml_models:/app/models
+    command: python -m uvicorn inference_service:app --host 0.0.0.0 --port 8001 --reload
+    environment:
+      CUDA_VISIBLE_DEVICES: ""  # Use CPU, set to 0 for GPU
+
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: code-review-dashboard
+    environment:
+      REACT_APP_API_URL: http://localhost:8000/api/v1
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./dashboard:/app
+    command: npm run dev
+
+volumes:
+  postgres_data:
+  redis_data:
+  ml_models:
+
+networks:
+  default:
+    name: code-review-network
